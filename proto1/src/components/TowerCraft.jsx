@@ -222,6 +222,7 @@ const TowerCraft = () => {
         const newBoss = {
           id: enemyIdRef.current++,
           hp: baseHp,
+          name: `보스 웨이브 ${wave}`, // 👈 이름 필드 추가
           maxHp: baseHp,
           x: 90,
           lane,
@@ -916,7 +917,13 @@ const TowerCraft = () => {
                 className="slime-sprite"
                 style={{ width: size, height: size }}
               />
-
+              {enemy.isBoss && (
+                <div className="absolute -top-10 left-1/2 -translate-x-1/2 flex flex-col items-center">
+                  <div className="text-[10px] bg-purple-600 text-yellow-300 px-2 py-0.5 rounded border border-yellow-400">
+                    {enemy.name || "BOSS"} {/* 👈 보스 이름 표시 */}
+                  </div>
+                </div>
+              )}
               {/* 상태 이펙트 */}
               <div className="absolute -top-5 flex gap-1 text-xs">
                 {isSlowed && <span className="text-blue-400">❄️</span>}
