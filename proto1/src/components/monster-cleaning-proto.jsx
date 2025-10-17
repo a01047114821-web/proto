@@ -1,6 +1,19 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Lock, Zap } from "lucide-react";
 
+const displayName = {
+  blood: "💉 피",
+  bone: "🦴 뼈",
+  leather: "🛡️ 가죽",
+  toxin: "☠️ 독소",
+  manaLiquid: "💧 마나액",
+  bonePowder: "⚪ 골분",
+  reinforcedLeather: "🛡️ 강화가죽",
+  refinedToxin: "🧪 정제독소",
+  energyCrystal: "💎 결정",
+};
+const toKo = (key) => displayName[key] || key;
+
 const MonsterCleaningIsometric = () => {
   const canvasRef = useRef(null);
   const [gameState, setGameState] = useState({
@@ -22,7 +35,7 @@ const MonsterCleaningIsometric = () => {
     corpseZones: [
       {
         id: 1,
-        x: 150,
+        x: 15,
         y: 210,
         width: 200,
         height: 200,
@@ -31,7 +44,7 @@ const MonsterCleaningIsometric = () => {
       },
       {
         id: 2,
-        x: 400,
+        x: 15,
         y: 450,
         width: 180,
         height: 130,
@@ -40,8 +53,8 @@ const MonsterCleaningIsometric = () => {
       },
       {
         id: 3,
-        x: 850,
-        y: 80,
+        x: 15,
+        y: 0,
         width: 220,
         height: 180,
         purified: true,
@@ -49,12 +62,12 @@ const MonsterCleaningIsometric = () => {
       },
     ],
     corpses: [
-      { id: 1, x: 150, y: 200, collected: false, zone: 1 },
-      { id: 2, x: 200, y: 250, collected: false, zone: 1 },
-      { id: 3, x: 180, y: 180, collected: false, zone: 1 },
-      { id: 4, x: 220, y: 220, collected: false, zone: 1 },
-      { id: 5, x: 160, y: 270, collected: false, zone: 1 },
-      { id: 6, x: 240, y: 300, collected: false, zone: 1 },
+      // { id: 1, x: 150, y: 200, collected: false, zone: 1 },
+      // { id: 2, x: 200, y: 250, collected: false, zone: 1 },
+      // { id: 3, x: 180, y: 180, collected: false, zone: 1 },
+      // { id: 4, x: 220, y: 220, collected: false, zone: 1 },
+      // { id: 5, x: 160, y: 270, collected: false, zone: 1 },
+      // { id: 6, x: 240, y: 300, collected: false, zone: 1 },
     ],
     facilities: [
       {
@@ -288,6 +301,64 @@ const MonsterCleaningIsometric = () => {
     handleInteractionRef.current = handleInteraction;
   });
 
+  // ✅ 1. 이미 존재하는 시체들을 안쪽으로 밀어넣기 (보정용)
+  useEffect(() => {
+    const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+    const margin = 22;
+
+    setGameState((prev) => {
+      const s = { ...prev };
+      s.corpses = s.corpses.map((c) => {
+        const z = s.corpseZones.find((zz) => zz.id === c.zone);
+        if (!z) return c;
+
+        const minX = z.x + margin;
+        const maxX = z.x + z.width - margin;
+        const minY = z.y + margin;
+        const maxY = z.y + z.height - margin;
+
+        return {
+          ...c,
+          x: clamp(c.x, minX, maxX),
+          y: clamp(c.y, minY, maxY),
+        };
+      });
+      return s;
+    });
+  }, []);
+
+  // ✅ 2. 게임 시작 시 새 시체 5마리 스폰 (초기 생성용)
+  useEffect(() => {
+    setGameState((prev) => {
+      const s = { ...prev };
+      const zones = s.corpseZones.filter((z) => !z.purified);
+      if (!zones.length) return s;
+
+      const newCorpses = [];
+      const margin = 22;
+      for (let i = 0; i < 5; i++) {
+        const zone = zones[Math.floor(Math.random() * zones.length)];
+        const x =
+          zone.x +
+          margin +
+          Math.random() * Math.max(0, zone.width - 2 * margin);
+        const y =
+          zone.y +
+          margin +
+          Math.random() * Math.max(0, zone.height - 2 * margin);
+        newCorpses.push({
+          id: Date.now() + Math.random(),
+          x,
+          y,
+          collected: false,
+          zone: zone.id,
+        });
+      }
+      s.corpses = [...s.corpses, ...newCorpses];
+      return s;
+    });
+  }, []);
+
   // ====== 키 리스너: 한 번만 등록 + 기본 스크롤 방지 + 최신 핸들러 호출 ======
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -395,7 +466,9 @@ const MonsterCleaningIsometric = () => {
               if (f.type === "dissectionTable") s.completedOrders += 1;
 
               // ✅ map 콜백은 "시설 1개"만 리턴해야 한다
-              addNotification("해체 완료! 재료를 선택할 수 있습니다.");
+              addNotification(
+                `${facilityInfo[f.type].name} 완료! 생산물을 수령하세요.`
+              );
               return {
                 ...f,
                 working: false,
@@ -443,17 +516,39 @@ const MonsterCleaningIsometric = () => {
       }
 
       // 사체 영역 (예시 고정 박스)
-      ctx.fillStyle = "rgba(139, 0, 0, 0.2)";
-      ctx.fillRect(80, 120, 200, 200);
-      ctx.strokeStyle = "#8B0000";
-      ctx.lineWidth = 2;
-      ctx.setLineDash([5, 5]);
-      ctx.strokeRect(80, 120, 200, 200);
-      ctx.setLineDash([]);
-      ctx.font = "12px Arial";
-      ctx.fillStyle = "#ff6666";
-      ctx.textAlign = "center";
-      ctx.fillText("사체 발견 구역", 180, 110);
+      // ctx.fillStyle = "rgba(139, 0, 0, 0.2)";
+      // ctx.fillRect(80, 120, 200, 200);
+      // ctx.strokeStyle = "#8B0000";
+      // ctx.lineWidth = 2;
+      // ctx.setLineDash([5, 5]);
+      // ctx.strokeRect(80, 120, 200, 200);
+      // ctx.setLineDash([]);
+      // ctx.font = "12px Arial";
+      // ctx.fillStyle = "#ff6666";
+      // ctx.textAlign = "center";
+      // ctx.fillText("사체 발견 구역", 180, 110);
+
+      // ✅ 모든 사체 구역을 state로부터 그림
+      const zones = gs.corpseZones || [];
+      zones.forEach((zone) => {
+        ctx.fillStyle = "rgba(139, 0, 0, 0.20)";
+        ctx.fillRect(zone.x, zone.y, zone.width, zone.height);
+
+        ctx.strokeStyle = "#8B0000";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        ctx.strokeRect(zone.x, zone.y, zone.width, zone.height);
+        ctx.setLineDash([]);
+
+        ctx.font = "12px Arial";
+        ctx.fillStyle = "#ff6666";
+        ctx.textAlign = "center";
+        ctx.fillText(
+          "사체 발견 구역",
+          zone.x + zone.width / 2,
+          Math.max(0, zone.y - 8)
+        );
+      });
 
       // 사체
       gs.corpses.forEach((corpse) => {
@@ -997,6 +1092,44 @@ const MonsterCleaningIsometric = () => {
     addNotification(`${info.name} 해금!`);
   };
 
+  // 🧟 시체 자동 젠 시스템 (시체 발견 구역 안에서만 젠)
+  useEffect(() => {
+    const spawnCorpse = () => {
+      setGameState((prev) => {
+        const activeCorpses = prev.corpses.filter((c) => !c.collected);
+        if (activeCorpses.length >= 10) return prev; // 너무 많으면 젠 안함
+
+        // 정화되지 않은 구역만 대상
+        const zones = prev.corpseZones.filter((z) => !z.purified);
+        if (zones.length === 0) return prev;
+
+        // 랜덤 구역 선택
+        const zone = zones[Math.floor(Math.random() * zones.length)];
+
+        // 구역 내부 랜덤 위치 지정
+        const x = zone.x + Math.random() * zone.width;
+        const y = zone.y + Math.random() * zone.height;
+
+        const newCorpse = {
+          id: Date.now(),
+          x,
+          y,
+          collected: false,
+          zone: zone.id,
+        };
+
+        return {
+          ...prev,
+          corpses: [...prev.corpses, newCorpse],
+        };
+      });
+    };
+
+    // 10초마다 시체 젠
+    const interval = setInterval(spawnCorpse, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
   return (
     <div className="w-full min-h-screen bg-slate-900 flex flex-col items-center p-4">
       {/* Notifications */}
@@ -1152,7 +1285,7 @@ const MonsterCleaningIsometric = () => {
                                 <div className="text-xs text-gray-300 mb-1">
                                   요청:{" "}
                                   {o.reqs
-                                    .map((r) => `${r.item} x${r.count}`)
+                                    .map((r) => `${toKo(r.item)} x${r.count}`)
                                     .join(", ")}
                                 </div>
                                 <div className="flex items-center justify-between">
@@ -1176,66 +1309,86 @@ const MonsterCleaningIsometric = () => {
                       )}
 
                       {/* 해체 작업대 결과물 선택 */}
-                      {f.type === "dissectionTable" &&
-                        (f.outputsReady?.length ?? 0) > 0 && (
-                          <div className="mt-3">
-                            <p className="text-sm text-yellow-400 mb-2">
-                              📦 가져갈 재료 선택
-                            </p>
+                      {(f.outputsReady?.length ?? 0) > 0 && (
+                        <div className="mt-3">
+                          <p className="text-sm text-yellow-400 mb-2">
+                            {f.type === "dissectionTable"
+                              ? "📦 가져갈 재료 선택"
+                              : "📦 생산물 수령"}
+                          </p>
 
-                            {/* 모두 인벤토리로 넣기 버튼 */}
-                            <button
-                              onClick={() => handleStoreAllOutputs(f.id)}
-                              className="mb-2 bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs font-bold"
-                            >
-                              모두 인벤토리로
-                            </button>
+                          {/* 모두 인벤토리로 넣기 버튼 */}
+                          <button
+                            onClick={() => handleStoreAllOutputs(f.id)}
+                            className="mb-2 bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs font-bold"
+                          >
+                            모두 인벤토리로
+                          </button>
 
-                            <div className="flex flex-wrap gap-2">
-                              {f.outputsReady.map((item) => (
-                                <div
-                                  key={item.id}
-                                  className="flex items-center gap-2 bg-slate-700 px-2 py-1 rounded"
+                          <div className="flex flex-wrap gap-2">
+                            {f.outputsReady.map((item) => (
+                              <div
+                                key={item.id}
+                                className="flex items-center gap-2 bg-slate-700 px-2 py-1 rounded"
+                              >
+                                <span className="text-sm">
+                                  {item.type === "blood"
+                                    ? "💉 피"
+                                    : item.type === "bone"
+                                    ? "🦴 뼈"
+                                    : item.type === "leather"
+                                    ? "🛡️ 가죽"
+                                    : item.type === "toxin"
+                                    ? "☠️ 독소"
+                                    : item.type === "manaLiquid"
+                                    ? "💧 마나액"
+                                    : item.type === "bonePowder"
+                                    ? "⚪ 골분"
+                                    : item.type === "reinforcedLeather"
+                                    ? "🛡️ 강화가죽"
+                                    : item.type === "refinedToxin"
+                                    ? "🧪 정제독소"
+                                    : item.type === "energyCrystal"
+                                    ? "💎 결정"
+                                    : item.type}
+                                </span>
+
+                                {/* 들기 버튼 (빈 손일 때만) */}
+                                <button
+                                  onClick={() => handleTakeOutput(item, f.id)}
+                                  disabled={!!gameState.player.carrying}
+                                  title={
+                                    gameState.player.carrying
+                                      ? "빈 손일 때만 들 수 있어요"
+                                      : ""
+                                  }
+                                  className={`px-2 py-1 rounded text-xs text-white
+     ${
+       gameState.player.carrying
+         ? "bg-gray-600 cursor-not-allowed"
+         : "bg-slate-600 hover:bg-green-600"
+     }`}
                                 >
-                                  <span className="text-sm">
-                                    {item.type === "blood"
-                                      ? "💉 피"
-                                      : item.type === "bone"
-                                      ? "🦴 뼈"
-                                      : item.type === "leather"
-                                      ? "🛡️ 가죽"
-                                      : item.type === "toxin"
-                                      ? "☠️ 독소"
-                                      : item.type}
-                                  </span>
+                                  들기
+                                </button>
 
-                                  {/* 들기 버튼 (빈 손일 때만) */}
-                                  <button
-                                    onClick={() => handleTakeOutput(item, f.id)}
-                                    className="bg-slate-600 hover:bg-green-600 text-white px-2 py-1 rounded text-xs"
-                                  >
-                                    들기
-                                  </button>
-
-                                  {/* 인벤토리로 넣기 버튼 */}
-                                  <button
-                                    onClick={() =>
-                                      handleStoreOutput(item, f.id)
-                                    }
-                                    className="bg-slate-600 hover:bg-cyan-600 text-white px-2 py-1 rounded text-xs"
-                                  >
-                                    인벤토리
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-
-                            <p className="text-xs text-gray-400 mt-2">
-                              ‘들기’는 빈 손일 때만 가능하고, ‘인벤토리’는 바로
-                              자원창에 저장됩니다.
-                            </p>
+                                {/* 인벤토리로 넣기 버튼 */}
+                                <button
+                                  onClick={() => handleStoreOutput(item, f.id)}
+                                  className="bg-slate-600 hover:bg-cyan-600 text-white px-2 py-1 rounded text-xs"
+                                >
+                                  인벤토리
+                                </button>
+                              </div>
+                            ))}
                           </div>
-                        )}
+
+                          <p className="text-xs text-gray-400 mt-2">
+                            ‘들기’는 빈 손일 때만 가능하고, ‘인벤토리’는 바로
+                            자원창에 저장됩니다.
+                          </p>
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
