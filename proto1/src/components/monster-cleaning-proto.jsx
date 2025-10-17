@@ -301,6 +301,47 @@ const MonsterCleaningIsometric = () => {
     handleInteractionRef.current = handleInteraction;
   });
 
+  // 교체 확인 모달 상태
+const [confirmReplace, setConfirmReplace] = useState({
+  open: false,
+  facilityId: null,
+});
+
+// 모달: "폐기하고 해체" 실행
+const handleConfirmReplace = () => {
+  setGameState(prev => {
+    const s = { ...prev };
+    const fac = s.facilities.find(f => f.id === confirmReplace.facilityId);
+    if (!fac) return s;
+
+    // 기존 작업 / 산출물 폐기
+    s.facilities = s.facilities.map(f =>
+      f.id === fac.id ? { ...f, input: null, working: false, progress: 0, outputsReady: [] } : f
+    );
+
+    // 플레이어가 시체를 들고 있으면 즉시 해체 시작
+    if (s.player.carrying === "corpse") {
+      s.player.carrying = null;
+      s.facilities = s.facilities.map(f =>
+        f.id === fac.id ? { ...f, input: "corpse", working: true, progress: 0 } : f
+      );
+      addNotification("해체 작업 시작");
+    } else {
+      addNotification("시체가 없어 해체를 시작하지 못했습니다");
+    }
+
+    return s;
+  });
+
+  setConfirmReplace({ open: false, facilityId: null });
+};
+
+// 모달: 취소
+const handleCancelReplace = () => {
+  setConfirmReplace({ open: false, facilityId: null });
+  addNotification("해체를 취소했습니다.");
+};
+
   // ✅ 1. 이미 존재하는 시체들을 안쪽으로 밀어넣기 (보정용)
   useEffect(() => {
     const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
@@ -823,6 +864,7 @@ const MonsterCleaningIsometric = () => {
         const facility = target.data;
         const info = facilityInfo[facility.type];
 
+        // 🗑️ 폐기통
         if (facility.type === "trashBin") {
           if (newState.player.carrying) {
             newState.player.carrying = null;
@@ -832,7 +874,8 @@ const MonsterCleaningIsometric = () => {
           }
           return newState;
         }
-        // 저장소에 자원 저장
+
+        // 📦 저장소 납품
         if (facility.type === "storage" && newState.player.carrying) {
           const prices = {
             manaLiquid: 50,
@@ -845,63 +888,101 @@ const MonsterCleaningIsometric = () => {
           newState.money += price;
           newState.player.carrying = null;
           addNotification(`+${price}원`);
+          return newState;
         }
-        // 컨베이어는 자동화
-        else if (facility.type === "conveyor") {
+
+        // 🔄 컨베이어
+        if (facility.type === "conveyor") {
           addNotification("자동화 시스템 가동 중!");
+          return newState;
         }
-        // 작업 시설
-        else if (
-          info.input &&
-          newState.player.carrying === info.input &&
-          !facility.working
-        ) {
-          newState.player.carrying = null;
-          newState.facilities = newState.facilities.map((f) =>
-            f.id === facility.id
-              ? { ...f, working: true, progress: 0, input: info.input }
-              : f
-          );
-          addNotification(`${info.name} 작업 시작`);
+
+        // 🧪 작업 시설 공통
+        else if (info.input) {
+          // === 해체 작업대 전용: 교체 확인 모달 ===
+          if (facility.type === "dissectionTable") {
+            const hasCorpseOnTable =
+              facility.input === "corpse" ||
+              facility.working ||
+              (facility.outputsReady?.length ?? 0) > 0;
+
+            // 플레이어가 시체를 들고 왔는데 이미 해체대에 뭔가 있다면 → 모달 오픈
+            if (newState.player.carrying === "corpse" && hasCorpseOnTable) {
+              setConfirmReplace({ open: true, facilityId: facility.id });
+              return newState; // 여기서 멈춤 (모달에서 결정)
+            }
+
+            // 빈 해체대에 시체 투입 → 바로 시작
+            if (
+              newState.player.carrying === "corpse" &&
+              !facility.working &&
+              !hasCorpseOnTable
+            ) {
+              newState.player.carrying = null;
+              newState.facilities = newState.facilities.map((f) =>
+                f.id === facility.id
+                  ? {
+                      ...f,
+                      working: true,
+                      progress: 0,
+                      input: "corpse",
+                      outputsReady: [],
+                    }
+                  : f
+              );
+              addNotification("해체 작업 시작");
+              return newState;
+            }
+
+            // 안내 메시지
+            if (
+              newState.player.carrying &&
+              newState.player.carrying !== "corpse"
+            ) {
+              addNotification("해체 작업대에는 시체만 올릴 수 있습니다.");
+            } else if (!newState.player.carrying && !facility.working) {
+              addNotification("시체를 들고 오면 해체를 시작합니다.");
+            }
+            return newState;
+          }
+
+          // === 해체 작업대 외 시설: 정상 투입 ===
+          if (newState.player.carrying === info.input && !facility.working) {
+            newState.player.carrying = null;
+            newState.facilities = newState.facilities.map((f) =>
+              f.id === facility.id
+                ? { ...f, working: true, progress: 0, input: info.input }
+                : f
+            );
+            addNotification(`${info.name} 작업 시작`);
+            return newState;
+          }
         }
-        // 생산물 회수
-        // else if (info.outputs && !newState.player.carrying) {
-        //   const available = info.outputs.find(
-        //     (output) => newState.resources[output] > 0
-        //   );
-        //   if (available) {
-        //     newState.resources[available]--;
-        //     newState.player.carrying = available;
-        //     addNotification(`${available} 회수`);
-        //   }
-        // }
-        // ✅ 생산물 회수: 들고 있어도 교체 픽업
-        else if (info.outputs) {
+
+        // 📦 생산물 회수 (해체 작업대 제외 — 버튼으로만 수령)
+        if (info.outputs) {
           if (newState.player.carrying) {
             addNotification(
               "빈 손일 때만 생산물을 들 수 있습니다. 🗑️에 버리고 오세요."
             );
             return newState;
           }
-
           if (facility.type === "dissectionTable") {
-            // 해체 작업대는 UI 버튼으로만 꺼내기/인벤토리 저장
+            // 해체 작업대는 사이드패널 버튼으로만 수령/저장
             return newState;
           }
-
           const available = info.outputs.find(
-            (output) => newState.resources[output] > 0
+            (o) => (newState.resources[o] || 0) > 0
           );
           if (available) {
             newState.resources[available]--;
-            // 기존에 들고 있던 아이템은 사라지고, 방금 집은 걸 손에 든다
             newState.player.carrying = available;
             addNotification(`${available} 회수`);
           }
         }
-      }
 
-      return newState;
+        return newState;
+      }
     });
   };
 
@@ -1439,6 +1520,43 @@ const MonsterCleaningIsometric = () => {
                   ))}
               </div>
             </div>
+
+            {/* 교체 확인 모달 */}
+            {confirmReplace.open && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60">
+                <div className="w-[360px] rounded-xl bg-slate-800 border border-slate-600 shadow-2xl p-5">
+                  <h3 className="text-lg font-bold text-white mb-2">
+                    해체 작업 확인
+                  </h3>
+                  <p className="text-sm text-gray-300 leading-6">
+                    해체 작업대에 이미{" "}
+                    <span className="text-yellow-300">시체 또는 산출물</span>이
+                    있습니다.
+                    <br />
+                    <span className="text-rose-300">기존 내용을 폐기</span>하고
+                    새로운 시체로 해체를 시작할까요?
+                  </p>
+
+                  <div className="mt-4 flex gap-2">
+                    <button
+                      onClick={handleConfirmReplace}
+                      className="flex-1 px-3 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold"
+                    >
+                      폐기하고 해체
+                    </button>
+                    <button
+                      onClick={handleCancelReplace}
+                      className="flex-1 px-3 py-2 rounded-lg bg-slate-600 hover:bg-slate-700 text-white"
+                    >
+                      취소
+                    </button>
+                  </div>
+                  <p className="mt-2 text-xs text-gray-400">
+                    ※ 폐기 시 기존 산출물은 사라집니다.
+                  </p>
+                </div>
+              </div>
+            )}
 
             <div className="bg-slate-800 rounded-lg p-4 border-2 border-slate-700">
               <h3 className="font-bold text-white mb-3">🔓 시설 해금</h3>
