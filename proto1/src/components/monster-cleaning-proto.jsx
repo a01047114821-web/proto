@@ -1335,7 +1335,7 @@ const MonsterCleaningIsometric = () => {
     };
 
     // 10초마다 시체 젠
-    const interval = setInterval(spawnCorpse, 5000);
+    const interval = setInterval(spawnCorpse, 20000);
     return () => clearInterval(interval);
   }, []);
 
