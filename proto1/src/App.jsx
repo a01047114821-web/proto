@@ -1,10 +1,10 @@
 import React from 'react'
-import TowerCraft from './components/TowerCraft.jsx'
+import MonsterCleaningIsometric from './components/monster-cleaning-proto.jsx'
 
 export default function App(){
   return (
     <div className="min-h-screen">
-      <TowerCraft />
+      <MonsterCleaningIsometric />
     </div>
   )
 }
