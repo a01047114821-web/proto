@@ -1,6 +1,14 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Lock, Zap } from "lucide-react";
 
+// === Infection / Zombie rules ===
+const CORPSE_TIMEOUT_MS = 20_000; // 사체가 좀비로 변하기까지 시간 (20초)
+const ZOMBIE_SPEED = 1.6; // 좀비 이동 속도(px/frame)
+const ZOMBIE_AGGRO_RADIUS = 220; // 추격 시작 반경
+const ZOMBIE_ATTACK_RANGE = 24; // 공격 범위(플레이어와의 거리)
+const ZOMBIE_DAMAGE = 10; // 공격 데미지
+const INVINCIBLE_MS = 800; // 피격 후 무적 시간
+
 const displayName = {
   blood: "💉 피",
   bone: "🦴 뼈",
@@ -17,7 +25,14 @@ const toKo = (key) => displayName[key] || key;
 const MonsterCleaningIsometric = () => {
   const canvasRef = useRef(null);
   const [gameState, setGameState] = useState({
-    player: { x: 100, y: 300, speed: 3, carrying: null },
+    player: {
+      x: 100,
+      y: 300,
+      speed: 3,
+      carrying: null,
+      hp: 100,
+      invincibleUntil: 0,
+    },
     resources: {
       blood: 0,
       bone: 0,
@@ -302,45 +317,48 @@ const MonsterCleaningIsometric = () => {
   });
 
   // 교체 확인 모달 상태
-const [confirmReplace, setConfirmReplace] = useState({
-  open: false,
-  facilityId: null,
-});
-
-// 모달: "폐기하고 해체" 실행
-const handleConfirmReplace = () => {
-  setGameState(prev => {
-    const s = { ...prev };
-    const fac = s.facilities.find(f => f.id === confirmReplace.facilityId);
-    if (!fac) return s;
-
-    // 기존 작업 / 산출물 폐기
-    s.facilities = s.facilities.map(f =>
-      f.id === fac.id ? { ...f, input: null, working: false, progress: 0, outputsReady: [] } : f
-    );
-
-    // 플레이어가 시체를 들고 있으면 즉시 해체 시작
-    if (s.player.carrying === "corpse") {
-      s.player.carrying = null;
-      s.facilities = s.facilities.map(f =>
-        f.id === fac.id ? { ...f, input: "corpse", working: true, progress: 0 } : f
-      );
-      addNotification("해체 작업 시작");
-    } else {
-      addNotification("시체가 없어 해체를 시작하지 못했습니다");
-    }
-
-    return s;
+  const [confirmReplace, setConfirmReplace] = useState({
+    open: false,
+    facilityId: null,
   });
 
-  setConfirmReplace({ open: false, facilityId: null });
-};
+  // 모달: "폐기하고 해체" 실행
+  const handleConfirmReplace = () => {
+    setGameState((prev) => {
+      const s = { ...prev };
+      const fac = s.facilities.find((f) => f.id === confirmReplace.facilityId);
+      if (!fac) return s;
 
-// 모달: 취소
-const handleCancelReplace = () => {
-  setConfirmReplace({ open: false, facilityId: null });
-  addNotification("해체를 취소했습니다.");
-};
+      // 기존 작업 / 산출물 폐기
+      s.facilities = s.facilities.map((f) =>
+        f.id === fac.id
+          ? { ...f, input: null, working: false, progress: 0, outputsReady: [] }
+          : f
+      );
+      // 플레이어가 시체를 들고 있으면 즉시 해체 시작
+      if (s.player.carrying === "corpse") {
+        s.player.carrying = null;
+        s.facilities = s.facilities.map((f) =>
+          f.id === fac.id
+            ? { ...f, input: "corpse", working: true, progress: 0 }
+            : f
+        );
+        addNotification("해체 작업 시작");
+      } else {
+        addNotification("시체가 없어 해체를 시작하지 못했습니다");
+      }
+
+      return s;
+    });
+
+    setConfirmReplace({ open: false, facilityId: null });
+  };
+
+  // 모달: 취소
+  const handleCancelReplace = () => {
+    setConfirmReplace({ open: false, facilityId: null });
+    addNotification("해체를 취소했습니다.");
+  };
 
   // ✅ 1. 이미 존재하는 시체들을 안쪽으로 밀어넣기 (보정용)
   useEffect(() => {
@@ -370,6 +388,8 @@ const handleCancelReplace = () => {
 
   // ✅ 2. 게임 시작 시 새 시체 5마리 스폰 (초기 생성용)
   useEffect(() => {
+    const now = Date.now(); // ✅ 현재 시각 저장
+
     setGameState((prev) => {
       const s = { ...prev };
       const zones = s.corpseZones.filter((z) => !z.purified);
@@ -377,6 +397,7 @@ const handleCancelReplace = () => {
 
       const newCorpses = [];
       const margin = 22;
+
       for (let i = 0; i < 5; i++) {
         const zone = zones[Math.floor(Math.random() * zones.length)];
         const x =
@@ -387,14 +408,19 @@ const handleCancelReplace = () => {
           zone.y +
           margin +
           Math.random() * Math.max(0, zone.height - 2 * margin);
+
         newCorpses.push({
-          id: Date.now() + Math.random(),
+          id: now + Math.random(),
           x,
           y,
           collected: false,
           zone: zone.id,
+          state: "corpse", // 🧟‍♂️ 시체 상태
+          spawnAt: now, // 스폰 시각
+          zombieAt: now + CORPSE_TIMEOUT_MS, // 변이 예정 시각
         });
       }
+
       s.corpses = [...s.corpses, ...newCorpses];
       return s;
     });
@@ -456,6 +482,49 @@ const handleCancelReplace = () => {
         // 경계
         player.x = Math.max(30, Math.min(1170, player.x));
         player.y = Math.max(30, Math.min(570, player.y));
+
+        // ===== 사체 → 좀비 변이 & 좀비 AI =====
+        //const now = performance?.now?.() ?? Date.now();
+        const now = Date.now();
+        s.corpses = s.corpses.map((c) => {
+          if (c.collected) return c;
+
+          // 아직 시체면: 타이머 지나면 좀비로 변이
+          if (c.state !== "zombie") {
+            if (!c.zombieAt)
+              c.zombieAt = (c.spawnAt || Date.now()) + CORPSE_TIMEOUT_MS;
+            if (now >= c.zombieAt) {
+              return { ...c, state: "zombie" };
+            }
+            return c;
+          }
+
+          // === 좀비 상태 ===
+          const dx = s.player.x - c.x;
+          const dy = s.player.y - c.y;
+          const dist = Math.hypot(dx, dy);
+
+          // 어그로 범위 내면 추격
+          if (dist < ZOMBIE_AGGRO_RADIUS && dist > 0.001) {
+            const vx = (dx / dist) * ZOMBIE_SPEED;
+            const vy = (dy / dist) * ZOMBIE_SPEED;
+            c = { ...c, x: c.x + vx, y: c.y + vy };
+          }
+
+          // 공격 판정
+          if (dist <= ZOMBIE_ATTACK_RANGE) {
+            if (now >= (s.player.invincibleUntil || 0)) {
+              s.player = {
+                ...s.player,
+                hp: Math.max(0, s.player.hp - ZOMBIE_DAMAGE),
+                invincibleUntil: now + INVINCIBLE_MS,
+              };
+              addNotification(`⚠️ 공격 받음 (-${ZOMBIE_DAMAGE})`);
+            }
+          }
+
+          return c;
+        });
 
         // 가장 가까운 대상 찾기
         let nearestTarget = null;
@@ -592,24 +661,68 @@ const handleCancelReplace = () => {
       });
 
       // 사체
-      gs.corpses.forEach((corpse) => {
-        if (corpse.collected) return;
+      gs.corpses.forEach((c) => {
+        if (c.collected) return;
 
         const isSelected =
           gs.selectedTarget?.type === "corpse" &&
-          gs.selectedTarget?.data.id === corpse.id;
+          gs.selectedTarget?.data.id === c.id;
 
         if (isSelected) {
           ctx.fillStyle = "rgba(255, 215, 0, 0.3)";
           ctx.beginPath();
-          ctx.arc(corpse.x, corpse.y, 25, 0, Math.PI * 2);
+          ctx.arc(c.x, c.y, 25, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        if (c.state === "zombie") {
+          ctx.fillStyle = "rgba(255,0,0,0.25)";
+          ctx.beginPath();
+          ctx.arc(c.x, c.y, 20, 0, Math.PI * 2);
           ctx.fill();
         }
 
         ctx.font = "30px Arial";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText("🧟", corpse.x, corpse.y);
+        ctx.fillText(c.state === "zombie" ? "🧟‍♂️" : "🧟", c.x, c.y);
+
+        // ---- 사체일 때 '좀비 변이까지 남은 시간' 표시 (텍스트 + 원형 게이지) ----
+        if (c.state !== "zombie") {
+          const now = Date.now();
+          const total = CORPSE_TIMEOUT_MS;
+          const zbAt = c.zombieAt ?? (c.spawnAt ?? now) + total;
+          const remainMs = Math.max(0, zbAt - now);
+          const remainSec = (remainMs / 1000).toFixed(1);
+          const ratio = 1 - Math.min(1, remainMs / total); // 0→1 진행도
+
+          // 원형 게이지(얇은 호) - 남은 시간이 적을수록 붉게
+          const r = 22;
+          ctx.save();
+          ctx.lineWidth = 4;
+          // 색상: 녹색→노랑→빨강 (H 120→0 근사)
+          const hue = Math.floor(120 * (1 - ratio)); // 120(초록)~0(빨강)
+          ctx.strokeStyle = `hsl(${hue} 80% 55%)`;
+          ctx.beginPath();
+          ctx.arc(
+            c.x,
+            c.y,
+            r,
+            -Math.PI / 2,
+            -Math.PI / 2 + ratio * Math.PI * 2
+          );
+          ctx.stroke();
+          ctx.restore();
+
+          // 남은 시간 텍스트
+          ctx.save();
+          ctx.font = "11px Arial";
+          ctx.fillStyle = "#ffffff";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "alphabetic";
+          ctx.fillText(`${remainSec}s`, c.x, c.y - (r + 6));
+          ctx.restore();
+        }
       });
 
       // 시설
@@ -841,6 +954,10 @@ const handleCancelReplace = () => {
       const newState = { ...prev };
 
       if (target.type === "corpse") {
+        if (target.data.state === "zombie") {
+          addNotification("좀비는 수거할 수 없습니다! 피하세요.");
+          return newState;
+        }
         if (newState.player.carrying) {
           addNotification(
             "빈 손일 때만 수거 가능해요. 🗑️ 폐기통에 버리고 오세요."
@@ -1188,15 +1305,26 @@ const handleCancelReplace = () => {
         const zone = zones[Math.floor(Math.random() * zones.length)];
 
         // 구역 내부 랜덤 위치 지정
-        const x = zone.x + Math.random() * zone.width;
-        const y = zone.y + Math.random() * zone.height;
+        const margin = 22;
+        const x =
+          zone.x +
+          margin +
+          Math.random() * Math.max(0, zone.width - 2 * margin);
+        const y =
+          zone.y +
+          margin +
+          Math.random() * Math.max(0, zone.height - 2 * margin);
+        const now = Date.now();
 
         const newCorpse = {
-          id: Date.now(),
+          id: now + Math.random(),
           x,
           y,
           collected: false,
           zone: zone.id,
+          state: "corpse",
+          spawnAt: now,
+          zombieAt: now + CORPSE_TIMEOUT_MS,
         };
 
         return {
