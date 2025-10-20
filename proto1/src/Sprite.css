@@ -1,0 +1,19 @@
+@keyframes idle-steps{
+    from {background-position: 0 0;}
+    to {background-position: -1536px 0;}
+}
+
+@keyframes walk-steps {
+  from { background-position: 0 0; }
+  to   { background-position: -2048px 0; } /* 256 * 8 */
+}
+
+.sprite-player {
+  width: 256px;       /* 원하는 표시 크기 */
+  height: 256px;
+  background-image: url("sprites/player_idle_6x.png");
+  background-size: 1536px 256px;
+  background-repeat: no-repeat;
+  animation: idle-steps 0.6s steps(6) infinite;
+  image-rendering: pixelated; /* 픽셀스타일 */
+}

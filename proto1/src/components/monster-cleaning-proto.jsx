@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Lock, Zap } from "lucide-react";
-
+import PlayerSprite from "../PlayerSprite"; // 추가
+import { useLayoutEffect } from "react";
 // === Infection / Zombie rules ===
-const CORPSE_TIMEOUT_MS = 20_000; // 사체가 좀비로 변하기까지 시간 (20초)
+const CORPSE_TIMEOUT_MS = 50_000; // 사체가 좀비로 변하기까지 시간 (20초)
 const ZOMBIE_SPEED = 1.6; // 좀비 이동 속도(px/frame)
 const ZOMBIE_AGGRO_RADIUS = 220; // 추격 시작 반경
 const ZOMBIE_ATTACK_RANGE = 24; // 공격 범위(플레이어와의 거리)
+const PLAYER_PICKUP_RANGE = 28;
 const ZOMBIE_DAMAGE = 10; // 공격 데미지
 const INVINCIBLE_MS = 800; // 피격 후 무적 시간
 
@@ -22,8 +24,30 @@ const displayName = {
 };
 const toKo = (key) => displayName[key] || key;
 
+
+function useCanvasScale(canvasRef, logicalW = 1200, logicalH = 600) {
+  const [scale, setScale] = useState(1);
+
+  useLayoutEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const update = () => {
+      // 표시(클라이언트) 크기 / 내부 크기
+      const sx = el.clientWidth / logicalW;
+      const sy = el.clientHeight / logicalH;
+      setScale(Math.min(sx, sy)); // 보통 둘이 같지만 혹시 모를 왜곡 방지
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, [canvasRef, logicalW, logicalH]);
+
+  return scale;
+}
+
 const MonsterCleaningIsometric = () => {
   const canvasRef = useRef(null);
+  const scale = useCanvasScale(canvasRef, 1200, 600);
   const [gameState, setGameState] = useState({
     player: {
       x: 100,
@@ -44,9 +68,10 @@ const MonsterCleaningIsometric = () => {
       refinedToxin: 0,
       energyCrystal: 0,
       purifier: 0,
-      orders: [],
+      //orders: [],
     },
     money: 500,
+    orders: [],
     corpseZones: [
       {
         id: 1,
@@ -296,7 +321,7 @@ const MonsterCleaningIsometric = () => {
       unlockCondition: "시작 시설",
     },
   };
-
+  
   const addNotification = (message) => {
     const id = Date.now();
     setGameState((prev) => ({
@@ -418,6 +443,8 @@ const MonsterCleaningIsometric = () => {
           state: "corpse", // 🧟‍♂️ 시체 상태
           spawnAt: now, // 스폰 시각
           zombieAt: now + CORPSE_TIMEOUT_MS, // 변이 예정 시각
+          homeX: x,
+          homeY: y,
         });
       }
 
@@ -472,6 +499,9 @@ const MonsterCleaningIsometric = () => {
       // ---------- 1) 게임 로직 업데이트 ----------
       setGameState((prev) => {
         const s = { ...prev };
+
+        s.corpses = s.corpses.filter((c) => !c.collected);
+
         const player = { ...s.player };
         // 이동
         if (s.keys["arrowup"] || s.keys["w"]) player.y -= player.speed;
@@ -485,51 +515,133 @@ const MonsterCleaningIsometric = () => {
 
         // ===== 사체 → 좀비 변이 & 좀비 AI =====
         //const now = performance?.now?.() ?? Date.now();
-        const now = Date.now();
-        s.corpses = s.corpses.map((c) => {
-          if (c.collected) return c;
+        // === 좀비 변이 및 AI (구역 이탈 금지 + 귀환 로직) ===
+        {
+          const now = Date.now();
+          s.corpses = s.corpses.filter((c) => !c.collected);
+          // 구역 유틸
+          const getZone = (id) => s.corpseZones.find((z) => z.id === id);
+          const inZone = (z, px, py, margin = 0) => {
+            if (!z) return false;
+            return (
+              px >= z.x + margin &&
+              px <= z.x + z.width - margin &&
+              py >= z.y + margin &&
+              py <= z.y + z.height - margin
+            );
+          };
+          const clampToZone = (z, px, py, margin = 4) => {
+            if (!z) return { x: px, y: py };
+            const x = Math.max(
+              z.x + margin,
+              Math.min(z.x + z.width - margin, px)
+            );
+            const y = Math.max(
+              z.y + margin,
+              Math.min(z.y + z.height - margin, py)
+            );
+            return { x, y };
+          };
 
-          // 아직 시체면: 타이머 지나면 좀비로 변이
-          if (c.state !== "zombie") {
-            if (!c.zombieAt)
-              c.zombieAt = (c.spawnAt || Date.now()) + CORPSE_TIMEOUT_MS;
-            if (now >= c.zombieAt) {
-              return { ...c, state: "zombie" };
+          const CHASE_SPD = ZOMBIE_SPEED;
+          const RETURN_SPD = ZOMBIE_SPEED * 0.8;
+          const EDGE_MARGIN = 6; // 경계 살짝 안쪽에서만 움직이게
+
+          s.corpses = s.corpses.map((c) => {
+            if (c.collected) return c;
+
+            const z = getZone(c.zone);
+
+            // 1) 시체 → 좀비 변이
+            if (c.state !== "zombie") {
+              const zbAt = c.zombieAt ?? (c.spawnAt ?? now) + CORPSE_TIMEOUT_MS;
+              if (now >= zbAt) {
+                // ② 변이 직전 유예: 플레이어가 근처(<=28px)이고 빈손이면 300ms 미룸
+                const dxp = player.x - c.x;
+                const dyp = player.y - c.y;
+                const pd = Math.hypot(dxp, dyp);
+                const PLAYER_PICKUP_RANGE = 28; // 집기 허용 반경(선택)
+                const ZOMBIE_GRACE_MS = 300; // 변이 유예
+                const canPickupNow =
+                  !s.player.carrying && pd <= PLAYER_PICKUP_RANGE;
+                if (now >= zbAt && !canPickupNow) {
+                  return { ...c, state: "zombie", zombieAt: zbAt };
+                }
+                return {
+                  ...c,
+                  zombieAt:
+                    now >= zbAt && canPickupNow ? now + ZOMBIE_GRACE_MS : zbAt,
+                };
+              }
+              return { ...c, zombieAt: zbAt };
             }
-            return c;
-          }
 
-          // === 좀비 상태 ===
-          const dx = s.player.x - c.x;
-          const dy = s.player.y - c.y;
-          const dist = Math.hypot(dx, dy);
+            // 2) 좀비 AI
+            const homeX = c.homeX ?? c.x;
+            const homeY = c.homeY ?? c.y;
 
-          // 어그로 범위 내면 추격
-          if (dist < ZOMBIE_AGGRO_RADIUS && dist > 0.001) {
-            const vx = (dx / dist) * ZOMBIE_SPEED;
-            const vy = (dy / dist) * ZOMBIE_SPEED;
-            c = { ...c, x: c.x + vx, y: c.y + vy };
-          }
+            const dx = player.x - c.x;
+            const dy = player.y - c.y;
+            const dist = Math.hypot(dx, dy);
 
-          // 공격 판정
-          if (dist <= ZOMBIE_ATTACK_RANGE) {
-            if (now >= (s.player.invincibleUntil || 0)) {
-              s.player = {
-                ...s.player,
-                hp: Math.max(0, s.player.hp - ZOMBIE_DAMAGE),
-                invincibleUntil: now + INVINCIBLE_MS,
-              };
-              addNotification(`⚠️ 공격 받음 (-${ZOMBIE_DAMAGE})`);
+            // 플레이어가 같은 구역 안에 있을 때만 추격
+            const playerInSameZone = inZone(z, player.x, player.y, EDGE_MARGIN);
+            const shouldChase =
+              playerInSameZone && dist < ZOMBIE_AGGRO_RADIUS && dist > 0.0001;
+
+            let nx = c.x;
+            let ny = c.y;
+
+            if (shouldChase) {
+              // 추격 이동
+              const vx = (dx / dist) * CHASE_SPD;
+              const vy = (dy / dist) * CHASE_SPD;
+              nx += vx;
+              ny += vy;
+
+              // 경계 밖으로 못 나가게 즉시 클램프
+              const clamped = clampToZone(z, nx, ny, EDGE_MARGIN);
+              nx = clamped.x;
+              ny = clamped.y;
+            } else {
+              // 추격 불가(플레이어가 밖/멀다) → 홈으로 귀환
+              const hdx = homeX - c.x;
+              const hdy = homeY - c.y;
+              const hdist = Math.hypot(hdx, hdy);
+              if (hdist > 0.5) {
+                const vx = (hdx / hdist) * RETURN_SPD;
+                const vy = (hdy / hdist) * RETURN_SPD;
+                nx += vx;
+                ny += vy;
+              }
+              const clamped = clampToZone(z, nx, ny, EDGE_MARGIN);
+              nx = clamped.x;
+              ny = clamped.y;
             }
-          }
 
-          return c;
-        });
+            // 3) 공격 판정 (클램프된 좌표 기준)
+            const pdx = player.x - nx;
+            const pdy = player.y - ny;
+            const pdist = Math.hypot(pdx, pdy);
+            if (pdist <= ZOMBIE_ATTACK_RANGE && playerInSameZone) {
+              if (now >= (s.player.invincibleUntil || 0)) {
+                s.player = {
+                  ...s.player,
+                  hp: Math.max(0, s.player.hp - ZOMBIE_DAMAGE),
+                  invincibleUntil: now + INVINCIBLE_MS,
+                };
+                addNotification(`⚠️ 공격 받음 (-${ZOMBIE_DAMAGE})`);
+              }
+            }
 
-        // 가장 가까운 대상 찾기
+            return { ...c, x: nx, y: ny };
+          });
+        }
+
+        // 가장 가까운 대상 찾기ㅞ~
         let nearestTarget = null;
-        let minDist = 80;
-
+        //let minDist = 80;
+        let minDist = Math.max(PLAYER_PICKUP_RANGE, 80);
         // 사체
         s.corpses.forEach((corpse) => {
           if (corpse.collected) return;
@@ -801,16 +913,16 @@ const MonsterCleaningIsometric = () => {
       });
 
       // 플레이어
-      ctx.fillStyle = gs.player.carrying ? "#FFD700" : "#4CAF50";
-      ctx.beginPath();
-      ctx.arc(gs.player.x, gs.player.y, 18, 0, Math.PI * 2);
-      ctx.fill();
+      // ctx.fillStyle = gs.player.carrying ? "#FFD700" : "#4CAF50";
+      // ctx.beginPath();
+      // ctx.arc(gs.player.x, gs.player.y, 18, 0, Math.PI * 2);
+      // ctx.fill();
 
-      ctx.fillStyle = "#fff";
-      ctx.font = "24px Arial";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText("👷", gs.player.x, gs.player.y);
+      // ctx.fillStyle = "#fff";
+      // ctx.font = "24px Arial";
+      // ctx.textAlign = "center";
+      // ctx.textBaseline = "middle";
+      //ctx.fillText("👷", gs.player.x, gs.player.y);
 
       if (gs.player.carrying) {
         ctx.font = "20px Arial";
@@ -947,7 +1059,7 @@ const MonsterCleaningIsometric = () => {
   };
 
   const handleInteraction = () => {
-    const target = gameState.selectedTarget;
+    const target = stateRef.current.selectedTarget;
     if (!target) return;
 
     setGameState((prev) => {
@@ -964,19 +1076,16 @@ const MonsterCleaningIsometric = () => {
           );
           return newState;
         }
-        // if (!newState.player.carrying) {
-        //   newState.player.carrying = "corpse";
-        //   newState.corpses = newState.corpses.map((c) =>
-        //     c.id === target.data.id ? { ...c, collected: true } : c
-        //   );
-        //   addNotification("사체를 수거했습니다");
-        // }
-        newState.player.carrying = "corpse";
-        newState.corpses = newState.corpses.map((c) =>
-          c.id === target.data.id ? { ...c, collected: true } : c
+        newState.player = { ...newState.player, carrying: "corpse" };
+        newState.corpses = newState.corpses.filter(
+          (c) => c.id !== target.data.id
         );
+        newState.selectedTarget = null;
         newState.money += 20; // 수거 수당
         addNotification("사체를 수거했습니다 수거 수당 + 20");
+
+        stateRef.current = newState;
+        return newState;
       } else if (target.type === "facility") {
         const facility = target.data;
         const info = facilityInfo[facility.type];
@@ -1325,6 +1434,8 @@ const MonsterCleaningIsometric = () => {
           state: "corpse",
           spawnAt: now,
           zombieAt: now + CORPSE_TIMEOUT_MS,
+          homeX: x,
+          homeY: y,
         };
 
         return {
@@ -1398,7 +1509,7 @@ const MonsterCleaningIsometric = () => {
             </div>
           </div>
         </div>
-
+          
         <div className="flex gap-4">
           {/* Canvas */}
           <div className="flex-1">
@@ -1408,7 +1519,14 @@ const MonsterCleaningIsometric = () => {
               height={600}
               className="border-4 border-slate-700 rounded-lg bg-slate-800 w-full"
             />
-
+            
+            {/* ✅ 좌표와 크기에 스케일 적용 */}
+  <PlayerSprite
+    x={gameState.player.x * scale}
+    y={gameState.player.y * scale}
+    scale={0.3} // 아래 컴포넌트에서 width/height에 반영
+  />
+            
             <div className="bg-slate-800 rounded-lg p-3 mt-4 border-2 border-slate-700">
               <div className="text-sm text-gray-300 space-y-1">
                 <p>
